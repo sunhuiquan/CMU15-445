@@ -56,7 +56,7 @@ class TrieNode {
     for (int i = 97; i <= 122; ++i) { // from a to z
       ptr = other_trie_node.GetChildNode(i);
       if (ptr) {
-        children_[i] = std::move(*ptr);
+        children_[i] = std::move(*ptr); // TODO: bug?
       }
     }
   }
@@ -127,7 +127,7 @@ class TrieNode {
     if (children_.find(key_char) != children_.end() || key_char != child->GetKeyChar()) {
       return nullptr;
     }
-    children_[key_char] = std::move(child);
+    children_[key_char] = std::move(child); // TODO: why need
     return &children_.at(key_char);
   }
 
@@ -207,7 +207,7 @@ class TrieNodeWithValue : public TrieNode {
    * @param trieNode TrieNode whose data is to be moved to TrieNodeWithValue
    * @param value
    */
-  TrieNodeWithValue(TrieNode &&trieNode, T value) : TrieNode(trieNode), value_(value) {
+  TrieNodeWithValue(TrieNode &&trieNode, T value) : TrieNode(std::move(trieNode)), value_(value) {
     is_end_ = true;
   }
 
@@ -254,12 +254,12 @@ class Trie {
 
  public:
   /**
-   * TODO(P0): Add implementation
-   *
    * @brief Construct a new Trie object. Initialize the root node with '\0'
    * character.
    */
-  Trie() = default;
+  Trie() {
+    root_ = std::make_unique<TrieNode>('\0');
+  }
 
   /**
    * TODO(P0): Add implementation
@@ -289,7 +289,35 @@ class Trie {
    */
   template <typename T>
   bool Insert(const std::string &key, T value) {
-    return false;
+    if (key.empty()) {
+      return false;
+    }
+
+    std::unique_ptr<TrieNode> *ptr = &root_;
+    size_t len = key.size();
+    size_t i = 0;
+    for (; i < len - 1; ++i) {
+      std::unique_ptr<TrieNode> *next = (*ptr)->GetChildNode(key[i]);
+      if (next == nullptr) {
+        (*ptr)->InsertChildNode(key[i], std::make_unique<TrieNode>(key[i]));
+        ptr = (*ptr)->GetChildNode(key[i]);
+      } else {
+        ptr = next; 
+      }
+    }
+
+    std::unique_ptr<TrieNode> *next = (*ptr)->GetChildNode(key[i]);
+    if (next == nullptr) {
+      (*ptr)->InsertChildNode(key[i], std::make_unique<TrieNodeWithValue<T>>(key[i], value));
+      return true;
+    } else {
+      if ((*next)->GetKeyChar() != key[i] || (*next)->IsEndNode()) {
+        return false;
+      } else {
+        (*ptr)->InsertChildNode(key[i], std::move(std::make_unique<TrieNodeWithValue<T>>(std::move(**next), value)));
+        return true;
+      }
+    }
   }
 
   /**
@@ -309,11 +337,45 @@ class Trie {
    * @param key Key used to traverse the trie and find the correct node
    * @return True if the key exists and is removed, false otherwise
    */
-  bool Remove(const std::string &key) { return false; }
+  bool Remove(const std::string &key) {
+    if (key.empty()) {
+      return false;
+    }
+
+    std::vector<std::unique_ptr<TrieNode>*> path = {&root_};
+    std::unique_ptr<TrieNode> *ptr = &root_;
+    size_t len = key.size();
+    size_t i = 0;
+    for (; i < len - 1; ++i) {
+      std::unique_ptr<TrieNode> *next = (*ptr)->GetChildNode(key[i]);
+      if (next == nullptr) {
+        return false;
+      }
+      path.push_back(next);
+      ptr = next;
+    }
+
+    std::unique_ptr<TrieNode> *end = (*ptr)->GetChildNode(key[i]);
+    if (end == nullptr || (*end)->GetKeyChar() != key[i] || !(*end)->IsEndNode()) {
+      return false;
+    }
+
+
+    ptr = path.back();
+    path.pop_back();
+    do {
+      (*ptr)->RemoveChildNode((*end)->GetKeyChar());
+      if ((*ptr)->HasChildren()) {
+        break;
+      }
+      ptr = path.back();
+      path.pop_back();
+    } while(!path.empty());
+
+    return true;
+  }
 
   /**
-   * TODO(P0): Add implementation
-   *
    * @brief Get the corresponding value of type T given its key.
    * If key is empty, set success to false.
    * If key does not exist in trie, set success to false.
@@ -331,8 +393,26 @@ class Trie {
    */
   template <typename T>
   T GetValue(const std::string &key, bool *success) {
-    *success = false;
-    return {};
+    if (key.empty()) {
+        *success = false;
+        return T();
+    }
+
+    std::unique_ptr<TrieNode> *ptr = &root_;
+    for (const char& ch: key) {
+      ptr = (*ptr)->GetChildNode(ch);
+      if (ptr == nullptr) {
+        *success = false;
+        return T();
+      }
+    }
+
+    TrieNodeWithValue<T> *ptr_with_value = dynamic_cast<TrieNodeWithValue<T>*>(ptr->get());
+    if (ptr_with_value == nullptr) {
+        *success = false;
+        return T();
+    }
+    return ptr_with_value->GetValue(); // TODO: why didn't use isEnd?
   }
 };
 }  // namespace bustub
