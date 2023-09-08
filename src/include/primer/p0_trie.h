@@ -45,12 +45,12 @@ class TrieNode {
    */
   TrieNode(TrieNode &&other_trie_node) noexcept {
     key_char_ = other_trie_node.GetKeyChar();
-    is_end_ = other_trie_node.IsEndNode();
+    is_end_ = false;
     std::unique_ptr<TrieNode> *ptr;
-    for (int i = 97; i <= 122; ++i) { // from a to z
+    for (int i = 97; i <= 122; ++i) {  // from a to z
       ptr = other_trie_node.GetChildNode(i);
-      if (ptr) {
-        children_[i] = std::move(*ptr); // TODO: bug?
+      if (ptr != nullptr) {
+        children_[i] = std::move(*ptr);
       }
     }
   }
@@ -74,7 +74,7 @@ class TrieNode {
    *
    * @return True if this trie node has any child node, false if it has no child node.
    */
-  bool HasChildren() const { return children_.size() > 0; }
+  bool HasChildren() const { return !children_.empty(); }
 
   /**
    * @brief Whether this trie node is the ending character of a key string.
@@ -183,9 +183,7 @@ class TrieNodeWithValue : public TrieNode {
    * @param trieNode TrieNode whose data is to be moved to TrieNodeWithValue
    * @param value
    */
-  TrieNodeWithValue(TrieNode &&trieNode, T value) : TrieNode(std::move(trieNode)), value_(value) {
-    is_end_ = true;
-  }
+  TrieNodeWithValue(TrieNode &&trieNode, T value) : TrieNode(std::move(trieNode)), value_(value) { is_end_ = true; }
 
   /**
    * @brief Construct a new TrieNodeWithValue. This is used when a new terminal node is constructed.
@@ -198,9 +196,7 @@ class TrieNodeWithValue : public TrieNode {
    * @param key_char Key char of this node
    * @param value Value of this node
    */
-  TrieNodeWithValue(char key_char, T value) : TrieNode(key_char), value_(value) {
-    is_end_ = true;
-  }
+  TrieNodeWithValue(char key_char, T value) : TrieNode(key_char), value_(value) { is_end_ = true; }
 
   /**
    * @brief Destroy the Trie Node With Value object
@@ -231,9 +227,7 @@ class Trie {
    * @brief Construct a new Trie object. Initialize the root node with '\0'
    * character.
    */
-  Trie() {
-    root_ = std::make_unique<TrieNode>('\0');
-  }
+  Trie() { root_ = std::make_unique<TrieNode>('\0'); }
 
   /**
    * @brief Insert key-value pair into the trie.
@@ -265,6 +259,7 @@ class Trie {
       return false;
     }
 
+    latch_.WLock();
     std::unique_ptr<TrieNode> *ptr = &root_;
     size_t len = key.size();
     size_t i = 0;
@@ -272,6 +267,10 @@ class Trie {
       std::unique_ptr<TrieNode> *next = (*ptr)->GetChildNode(key[i]);
       if (next == nullptr) {
         ptr = (*ptr)->InsertChildNode(key[i], std::make_unique<TrieNode>(key[i]));
+        if (!ptr) {
+          latch_.WUnlock();
+          return false;
+        }
       } else {
         ptr = next;
       }
@@ -279,16 +278,27 @@ class Trie {
 
     std::unique_ptr<TrieNode> *next = (*ptr)->GetChildNode(key[i]);
     if (next == nullptr) {
-      (*ptr)->InsertChildNode(key[i], std::make_unique<TrieNodeWithValue<T>>(key[i], value));
-      return true;
-    } else {
-      if ((*next)->GetKeyChar() != key[i] || (*next)->IsEndNode()) {
+      if (!(*ptr)->InsertChildNode(key[i], std::make_unique<TrieNodeWithValue<T>>(key[i], value))) {
+        latch_.WUnlock();
         return false;
-      } else {
-        (*ptr)->InsertChildNode(key[i], std::move(std::make_unique<TrieNodeWithValue<T>>(std::move(**next), value)));
-        return true;
       }
+      latch_.WUnlock();
+      return true;
     }
+
+    if ((*next)->GetKeyChar() != key[i] || (*next)->IsEndNode()) {
+      latch_.WUnlock();
+      return false;
+    }
+
+    std::unique_ptr<TrieNode> tmp = std::make_unique<TrieNodeWithValue<T>>(std::move(**next), value);
+    (*ptr)->RemoveChildNode(key[i]);
+    if (!(*ptr)->InsertChildNode(key[i], std::move(tmp))) {
+      latch_.WUnlock();
+      return false;
+    }
+    latch_.WUnlock();
+    return true;
   }
 
   /**
@@ -311,13 +321,15 @@ class Trie {
       return false;
     }
 
-    std::vector<std::unique_ptr<TrieNode>*> path = {&root_};
+    latch_.WLock();
+    std::vector<std::unique_ptr<TrieNode> *> path = {&root_};
     std::unique_ptr<TrieNode> *ptr = &root_;
     size_t len = key.size();
     size_t i = 0;
     for (; i < len - 1; ++i) {
       std::unique_ptr<TrieNode> *next = (*ptr)->GetChildNode(key[i]);
       if (next == nullptr) {
+        latch_.WUnlock();
         return false;
       }
       path.push_back(next);
@@ -326,20 +338,35 @@ class Trie {
 
     std::unique_ptr<TrieNode> *end = (*ptr)->GetChildNode(key[i]);
     if (end == nullptr || (*end)->GetKeyChar() != key[i] || !(*end)->IsEndNode()) {
+      latch_.WUnlock();
       return false;
+    }
+
+    if ((*end)->HasChildren()) {
+      ptr = path.back();
+      std::unique_ptr<TrieNode> tmp = std::make_unique<TrieNode>(std::move(**end));
+      (*ptr)->RemoveChildNode(key[i]);
+      if ((*ptr)->InsertChildNode(key[i], std::move(tmp)) == nullptr) {
+        latch_.WUnlock();
+        return false;
+      }
+      latch_.WUnlock();
+      return true;
     }
 
     ptr = path.back();
     path.pop_back();
     do {
       (*ptr)->RemoveChildNode((*end)->GetKeyChar());
-      if ((*ptr)->HasChildren()) {
+      if ((*ptr)->IsEndNode() || (*ptr)->HasChildren()) {
         break;
       }
+      end = ptr;
       ptr = path.back();
       path.pop_back();
-    } while(!path.empty());
+    } while (!path.empty());
 
+    latch_.WUnlock();
     return true;
   }
 
@@ -363,24 +390,29 @@ class Trie {
   T GetValue(const std::string &key, bool *success) {
     *success = false;
     if (key.empty()) {
-        return T();
+      return T();
     }
 
+    latch_.RLock();
     std::unique_ptr<TrieNode> *ptr = &root_;
-    for (const char& ch: key) {
+    for (const char &ch : key) {
       ptr = (*ptr)->GetChildNode(ch);
       if (ptr == nullptr) {
+        latch_.RUnlock();
         return T();
       }
     }
 
-    TrieNodeWithValue<T> *ptr_with_value = dynamic_cast<TrieNodeWithValue<T>*>(ptr->get());
+    auto *ptr_with_value = dynamic_cast<TrieNodeWithValue<T> *>(ptr->get());
     if (ptr_with_value == nullptr) {
-        return T();
+      latch_.RUnlock();
+      return T();
     }
 
     *success = true;
-    return ptr_with_value->GetValue();
+    T ret = ptr_with_value->GetValue();
+    latch_.RUnlock();
+    return ret;
   }
 };
 }  // namespace bustub
