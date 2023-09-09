@@ -199,4 +199,18 @@ TEST(StarterTrieTest, ConcurrentTest1) {
   threads.clear();
 }
 
+TEST(StarterTrieTest, MYTEST1) {
+  Trie trie;
+  // int val;
+  bool success;
+
+  success = trie.Insert<int>("aaa", 1);
+  EXPECT_EQ(success, true);
+
+  success = trie.Insert<int>("aa", 1);
+  EXPECT_EQ(success, true);
+
+  trie.GetValue<int>("aa", &success);
+}
+
 }  // namespace bustub

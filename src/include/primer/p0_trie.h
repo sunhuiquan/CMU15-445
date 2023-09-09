@@ -44,15 +44,9 @@ class TrieNode {
    * @param other_trie_node Old trie node.
    */
   TrieNode(TrieNode &&other_trie_node) noexcept {
-    key_char_ = other_trie_node.GetKeyChar();
-    is_end_ = false;
-    std::unique_ptr<TrieNode> *ptr;
-    for (int i = 97; i <= 122; ++i) {  // from a to z
-      ptr = other_trie_node.GetChildNode(i);
-      if (ptr != nullptr) {
-        children_[i] = std::move(*ptr);
-      }
-    }
+    key_char_ = other_trie_node.key_char_;
+    is_end_ = other_trie_node.is_end_;
+    children_ = std::move(other_trie_node.children_);
   }
 
   /**
@@ -354,17 +348,15 @@ class Trie {
       return true;
     }
 
-    ptr = path.back();
-    path.pop_back();
-    do {
+    while (!path.empty()) {
+      ptr = path.back();
+      path.pop_back();
       (*ptr)->RemoveChildNode((*end)->GetKeyChar());
       if ((*ptr)->IsEndNode() || (*ptr)->HasChildren()) {
         break;
       }
       end = ptr;
-      ptr = path.back();
-      path.pop_back();
-    } while (!path.empty());
+    }
 
     latch_.WUnlock();
     return true;
@@ -389,9 +381,6 @@ class Trie {
   template <typename T>
   T GetValue(const std::string &key, bool *success) {
     *success = false;
-    if (key.empty()) {
-      return T();
-    }
 
     latch_.RLock();
     std::unique_ptr<TrieNode> *ptr = &root_;
@@ -415,4 +404,5 @@ class Trie {
     return ret;
   }
 };
+
 }  // namespace bustub
